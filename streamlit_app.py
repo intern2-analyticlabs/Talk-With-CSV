@@ -15,6 +15,41 @@ MODEL = "llama-3.1-8b-instant"  # Groq fast/free-tier friendly
 FORBIDDEN = re.compile(r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|ATTACH|DETACH|PRAGMA|REPLACE|CREATE|TRIGGER)\b", re.I)
 
 # ---------- Helpers ----------
+# --- Make column names SQL-safe (snake_case, no spaces/symbols, no reserved words) ---
+SQLITE_RESERVED = {
+    "select","from","where","group","order","by","limit","offset","join","inner","left",
+    "right","full","on","as","and","or","not","in","like","is","null","case","when","then",
+    "else","end","union","all","distinct","having","between","exists","create","table",
+    "index","insert","update","delete","drop","alter","values","into"
+}
+
+def clean_columns(df: pd.DataFrame):
+    """
+    Returns: (renamed_df, mapping: original -> cleaned)
+    Rules:
+      - lower_snake_case
+      - remove non-alnum chars
+      - prefix if starts with digit
+      - avoid SQLite reserved words
+      - dedupe by adding _1, _2...
+    """
+    mapping, used = {}, set()
+    for c in df.columns:
+        new = re.sub(r"[^0-9a-zA-Z_]+", "_", str(c)).strip("_").lower()
+        if new and new[0].isdigit():
+            new = f"col_{new}"
+        if new in SQLITE_RESERVED:
+            new = f"{new}_col"
+        base = new or "col"
+        i = 1
+        while new in used or new == "":
+            new = f"{base}_{i}"
+            i += 1
+        used.add(new)
+        mapping[c] = new
+    return df.rename(columns=mapping), mapping
+
+
 def get_client():
     api_key = st.secrets.get("GROQ_API_KEY") or os.getenv("GROQ_API_KEY")
     if not api_key:
@@ -131,6 +166,7 @@ def llm_sql(client: Groq, schema_text: str, question: str) -> str:
     system = (
         "You are a careful data analyst. Given an SQLite schema and a user question, "
         "produce a SINGLE, safe, SELECT-only SQLite query that answers it. "
+        "Use the exact table/column names from the schema (they are snake_case). "
         "No PRAGMA, no temp tables, no DDL/DML. Return ONLY SQL in a code block."
     )
     user = f"SQLite schema:\n{schema_text}\n\nUser question: {question}\n\nReturn ONLY SQL."
@@ -141,6 +177,7 @@ def llm_sql(client: Groq, schema_text: str, question: str) -> str:
         temperature=0
     )
     return resp.choices[0].message.content
+
 
 def llm_explain(client: Groq, question: str, sql: str, sample_df: pd.DataFrame) -> str:
     sys = "Explain the result succinctly for a non-technical stakeholder in 3–6 bullets."
@@ -249,11 +286,26 @@ if st.session_state.df is not None:
             st.warning("Please type a question.")
             st.stop()
 
+        # conn = sqlite3.connect(":memory:")
+        # table_name = "data"
+        # df.to_sql(table_name, conn, if_exists="replace", index=False)
+        # schema_text = get_schema_text(conn)
+        # st.code(schema_text, language="sql")
         conn = sqlite3.connect(":memory:")
         table_name = "data"
-        df.to_sql(table_name, conn, if_exists="replace", index=False)
+
+        # ✨ sanitize columns before loading to SQLite
+        df_sql, colmap = clean_columns(df)
+        df_sql.to_sql(table_name, conn, if_exists="replace", index=False)
+
+        # Show mapping so users know what to ask for
+        with st.expander("Column name mapping (original → SQL-safe)"):
+            map_df = pd.DataFrame({"original": list(colmap.keys()), "sql_name": list(colmap.values())})
+            st.dataframe(map_df.sort_values("original"), use_container_width=True)
+
         schema_text = get_schema_text(conn)
         st.code(schema_text, language="sql")
+
 
         if not client:
             st.info("Add GROQ_API_KEY in Secrets to enable Q&A.")
