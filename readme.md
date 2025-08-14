@@ -6,7 +6,7 @@ Upload a CSV → get auto insights → ask natural-language questions → app ge
 
 1) `python -m venv .venv && source .venv/bin/activate` (Windows: `.venv\Scripts\activate`)
 2) `pip install -r requirements.txt`
-3) Set your key: `export GROQ_API_KEY="your_key_here"` (Windows PowerShell: `$env:GROQ_API_KEY="your_key_here"`)
+3) Set your key: `export GROQ_API_KEY="your_key_here"` 
 4) `streamlit run streamlit_app.py`
 
 ## Deploy on Streamlit Cloud
